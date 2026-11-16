@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "brickhealth-console",
+  "main": "./src/worker.js",
+  "compatibility_date": "2026-11-16",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Only /api/* runs the Worker; every other path is a static file
+    "run_worker_first": ["/api/*"]
+  },
+  "observability": { "enabled": true },
+  "vars": {
+    // Set to your Core API base URL to leave demo mode, e.g. "https://api.example.com/v1/"
+    "CORE_API_URL": ""
+  }
+  // Secret, not a var:  npx wrangler secret put CORE_API_TOKEN
+  // Custom domain:      "routes": [{ "pattern": "console.example.com", "custom_domain": true }]
+}

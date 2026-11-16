@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrickHealth — Support Engineer Console</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/styles.css">
+<meta name="theme-color" content="#2a78d6">
+<meta name="description" content="BrickHealth support and field engineer console">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" aria-label="Main navigation">
+    <div class="brand"><div class="brand-mark">BH</div>BrickHealth</div>
+    <button class="nav-item active" data-view="faults">Fault queue <span class="nav-count" id="navCount">0</span></button>
+    <button class="nav-item" data-view="fleet-map">Fleet map</button>
+    <button class="nav-item" data-view="machines">Machines</button>
+    <button class="nav-item" data-view="work-orders">Work orders <span class="nav-count muted-count" id="woCount">0</span></button>
+    <button class="nav-item" data-view="remote-actions">Remote actions <span class="nav-count warn-count" id="apprCount">0</span></button>
+    <button class="nav-item" data-view="firmware">Firmware (OTA)</button>
+    <button class="nav-item" data-view="reports">Reports</button>
+    <div class="nav-group" data-role="field" hidden>
+    <button class="nav-item" data-view="my-jobs">My jobs <span class="nav-count" id="myJobCount">0</span></button>
+    <button class="nav-item" data-view="scan">Scan machine</button>
+    <button class="nav-item" data-view="van">Parts in van</button>
+    <button class="nav-item" data-view="my-history">My history</button>
+    </div>
+    <div class="sidebar-foot">Support console · v0.1<br>Tenant: Demo OEM</div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="viewTitle">Fault queue</h1>
+        <div class="sub" id="clock">Live · updated just now</div>
+      </div>
+      <label class="search">
+        <span aria-hidden="true">⌕</span>
+        <input id="search" type="search" placeholder="Search machine, site, fault code…">
+      </label>
+      <label class="role-switch"><span class="hide-sm">View as</span>
+        <select id="roleSel" aria-label="Switch role"><option value="support">Support engineer</option><option value="field">Field engineer</option></select>
+      </label>
+      <div class="user hide-sm"><div class="avatar" id="avatar">RK</div><span id="userName">Support L2</span></div>
+    </header>
+
+    <main class="content">
+      <div class="demo-note">Demo data for layout only — not real machines or customers.</div>
+      <div class="view" data-view="faults">
+
+      <!-- KPI tiles -->
+      <section class="kpis" aria-label="Key figures">
+        <div class="tile"><div class="label">Open faults</div><div class="value" id="kpiOpen">0</div><div class="meta" id="kpiOpenMeta">—</div></div>
+        <div class="tile"><div class="label">Machines online</div><div class="value">94%</div><div class="meta">141 of 150 reporting</div></div>
+        <div class="tile"><div class="label">Fixed remotely (7 days)</div><div class="value">36%</div><div class="meta">18 of 50 faults closed</div></div>
+        <div class="tile"><div class="label">Median time to acknowledge</div><div class="value">6 min</div><div class="meta">Critical faults, 7 days</div></div>
+        <div class="tile"><div class="label">Bricks today (fleet)</div><div class="value">4.1 L</div><div class="meta">≈ 4,10,000 bricks</div></div>
+      </section>
+
+      <!-- Queue + detail -->
+      <div class="grid-2">
+        <section class="card" aria-label="Fault queue">
+          <div class="card-head">
+            <h2>Fault queue</h2>
+            <span class="hint">Sorted by severity, then age</span>
+            <div class="chips" role="group" aria-label="Filter by severity">
+              <button class="chip active" data-f="all">All</button>
+              <button class="chip" data-f="critical">Critical</button>
+              <button class="chip" data-f="warning">Warning</button>
+              <button class="chip" data-f="info">Info</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Severity</th><th>Fault</th><th>Machine / site</th><th class="hide-sm">State</th><th>Age</th><th class="hide-sm">Status</th></tr></thead>
+              <tbody id="queue"></tbody>
+            </table>
+            <div class="empty" id="empty" hidden>No faults match this filter.</div>
+          </div>
+        </section>
+
+        <section class="card" aria-label="Fault detail" id="detail"></section>
+      </div>
+
+      <!-- Fleet state -->
+      <section class="card" aria-label="Fleet state">
+        <div class="card-head"><h2>Fleet right now</h2><span class="hint">150 machines by machine state</span></div>
+        <div class="card-body">
+          <div class="states" id="states"></div>
+          <div class="bar-stack" id="stateBar" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      </div><!-- /faults -->
+      <!-- FLEET MAP -->
+      <div class="view" data-view="fleet-map" hidden>
+        <div class="grid-map">
+          <section class="card">
+            <div class="card-head"><h2>Fleet map</h2><span class="hint">Schematic of sites in Haryana · tap a dot</span>
+              <div class="chips" id="mapChips" role="group" aria-label="Filter by state"></div>
+            </div>
+            <div class="card-body map-wrap"><svg id="mapSvg" viewBox="0 0 800 520" role="img" aria-label="Map of machine locations"></svg><div class="tooltip" id="mapTip"></div></div>
+            <div class="card-body map-legend" id="mapLegend"></div>
+          </section>
+          <section class="card" id="mapSide"></section>
+        </div>
+        <p class="demo-note">Production: replace this schematic with Leaflet or Mapbox tiles using each gateway's GPS.</p>
+      </div>
+
+      <!-- MACHINES -->
+      <div class="view" data-view="machines" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Machines</h2><span class="hint" id="mCountHint"></span>
+            <div class="chips" id="mChips" role="group" aria-label="Filter by state"></div>
+          </div>
+          <div class="table-wrap">
+            <table class="sortable">
+              <thead><tr>
+                <th data-k="id">Machine</th><th data-k="site">Site</th><th data-k="state">State</th>
+                <th data-k="engine">Engine</th><th data-k="module">Module</th>
+                <th data-k="bricks" class="num">Bricks today</th><th data-k="fuel" class="num hide-sm">Fuel / 1k bricks</th>
+                <th data-k="seen" class="hide-sm">Last seen</th><th data-k="fw" class="hide-sm">Firmware</th>
+              </tr></thead>
+              <tbody id="mBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- WORK ORDERS -->
+      <div class="view" data-view="work-orders" hidden>
+        <div class="toolbar"><span class="hint">Drag-free board: use the arrow on a card to move it to the next stage.</span><button class="btn primary" id="newWo">New work order</button></div>
+        <div class="kanban" id="kanban"></div>
+      </div>
+
+      <!-- REMOTE ACTIONS -->
+      <div class="view" data-view="remote-actions" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Waiting for your approval</h2><span class="hint">Risky commands need a second engineer</span></div>
+          <div class="card-body" id="approvals"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Remote command log</h2><span class="hint">Every remote action is audited</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Time</th><th>Machine</th><th>Command</th><th class="hide-sm">Reason</th><th>By</th><th>Result</th></tr></thead>
+              <tbody id="cmdlog"></tbody>
+            </table>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Command catalogue</h2><span class="hint">Only these commands can be sent to a gateway</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Command</th><th>What it does</th><th>Risk</th><th class="hide-sm">Allowed in state</th></tr></thead>
+              <tbody id="catalogue"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- FIRMWARE -->
+      <div class="view" data-view="firmware" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Active rollout · gw 1.5.0-rc1</h2><span class="hint" id="rollStatus"></span>
+            <div class="chips"><button class="btn" id="pauseRoll">Pause</button><button class="btn danger" id="rollbackRoll">Roll back</button></div>
+          </div>
+          <div class="card-body" id="rings"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Firmware on the fleet</h2><span class="hint">150 gateways</span></div>
+          <div class="card-body"><div class="bar-stack big" id="fwBar"></div><div class="map-legend" id="fwLegend"></div></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Releases</h2></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Version</th><th>Released</th><th>Status</th><th class="hide-sm">Changes</th><th class="num">Gateways</th></tr></thead>
+              <tbody id="releases"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- REPORTS -->
+      <div class="view" data-view="reports" hidden>
+        <div class="toolbar"><div class="chips" id="rangeChips" style="margin-left:0"><button class="chip" data-r="7">7 days</button><button class="chip active" data-r="30">30 days</button><button class="chip" data-r="season">This season</button></div></div>
+        <div class="kpis" id="repKpis"></div>
+        <div class="grid-2 even">
+          <section class="card"><div class="card-head"><h2>Faults per week</h2><span class="hint">All severities</span></div><div class="card-body chart" id="rWeekly"></div></section>
+          <section class="card"><div class="card-head"><h2>Top fault codes</h2><span class="hint">Count in period</span></div><div class="card-body chart" id="rCodes"></div></section>
+          <section class="card"><div class="card-head"><h2>MTBF by part</h2><span class="hint">Mean operating hours between failures</span></div><div class="card-body chart" id="rMtbf"></div></section>
+          <section class="card"><div class="card-head"><h2>Failures by root cause</h2><span class="hint">From closed RCA reports</span></div><div class="card-body chart" id="rCause"></div></section>
+        </div>
+        <section class="card">
+          <div class="card-head"><h2>Supplier batches to review</h2><span class="hint">Failure rate per 1,000 operating hours</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Part</th><th>Supplier batch</th><th class="num">Fitted</th><th class="num">Failed</th><th class="num">Rate / 1k h</th><th>Flag</th></tr></thead><tbody id="batches"></tbody></table></div>
+        </section>
+      </div>
+
+      <!-- ============ FIELD ENGINEER ============ -->
+      <div class="view" data-view="my-jobs" hidden>
+        <div id="myJobsList">
+          <div class="kpis field-kpis" id="fieldKpis"></div>
+          <section class="card">
+            <div class="card-head"><h2>Today's jobs</h2><span class="hint">In route order · Ajay (Rohtak)</span></div>
+            <div id="jobCards"></div>
+          </section>
+        </div>
+        <div id="jobDetail" hidden></div>
+      </div>
+
+      <div class="view" data-view="scan" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Find a machine</h2><span class="hint">Scan the QR sticker on the control panel, or type the ID</span></div>
+          <div class="card-body">
+            <div class="scan-box" aria-hidden="true"><div class="scan-frame"></div><div class="muted">Camera preview appears here in the mobile app</div></div>
+            <label class="field-label" for="scanInput">Machine ID</label>
+            <div class="inline"><input id="scanInput" class="input" placeholder="e.g. BMM-160 #0142" list="machineIds"><button class="btn primary" id="scanGo">Open</button></div>
+            <datalist id="machineIds"></datalist>
+          </div>
+        </section>
+        <section class="card" id="scanResult" hidden></section>
+        <section class="card">
+          <div class="card-head"><h2>Nearby machines</h2><span class="hint">Within 25 km of your location</span></div>
+          <ul class="side-list" id="nearby"></ul>
+        </section>
+      </div>
+
+      <div class="view" data-view="van" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Parts in van</h2><span class="hint">Van HR-12 · stock updates when you close a job</span><div class="chips"><button class="btn" id="restock">Request restock</button></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Part</th><th class="hide-sm">Part no.</th><th class="num">In van</th><th class="num">Minimum</th><th>Status</th></tr></thead><tbody id="vanBody"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Needed for today's jobs</h2></div>
+          <div class="card-body" id="vanNeeded"></div>
+        </section>
+      </div>
+
+      <div class="view" data-view="my-history" hidden>
+        <section class="card">
+          <div class="card-head"><h2>My completed jobs</h2><span class="hint" id="histHint"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>Work order</th><th>Machine</th><th>Task</th><th class="hide-sm">Root cause</th><th class="num">Hours</th><th>RCA</th></tr></thead><tbody id="histBody"></tbody></table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Remote command modal -->
+<div class="modal-bg" id="modalBg" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal">
+    <h3 id="modalTitle">Send remote command</h3>
+    <div class="muted" id="modalMachine"></div>
+    <label for="cmdSelect">Command</label>
+    <select id="cmdSelect">
+      <option value="reset" data-risk="low">Reset alarm after inspection</option>
+      <option value="snapshot" data-risk="low">Request fresh 5-min snapshot</option>
+      <option value="feed" data-risk="high">Reduce clay feed rate by 15%</option>
+      <option value="pressure" data-risk="high">Lower hydraulic pressure limit</option>
+      <option value="stop" data-risk="high">Stop drum (safe stop)</option>
+    </select>
+    <label for="cmdReason">Reason (required, saved in audit log)</label>
+    <textarea id="cmdReason" placeholder="e.g. Snapshot shows hopper jam; operator confirmed clear"></textarea>
+    <div class="warn-box" id="riskBox" hidden>This command changes machine behaviour. A second engineer must approve it before it is sent.</div>
+    <div class="check"><input type="checkbox" id="operatorOk"><label for="operatorOk" style="margin:0">Operator informed by phone and is clear of the machine</label></div>
+    <div class="row">
+      <button class="btn" id="cancelCmd">Cancel</button>
+      <button class="btn primary" id="sendCmd">Send</button>
+    </div>
+  </div>
+</div>
+<!-- Machine drawer -->
+<div class="drawer-bg" id="drawerBg"><aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Machine detail"></aside></div>
+<!-- New work order modal -->
+<div class="modal-bg" id="woModalBg" role="dialog" aria-modal="true" aria-labelledby="woTitle">
+  <div class="modal">
+    <h3 id="woTitle">New work order</h3>
+    <label for="woMachine">Machine</label><select id="woMachine"></select>
+    <label for="woTask">Task</label><textarea id="woTask" placeholder="e.g. Replace drum bearing, check chain tension"></textarea>
+    <label for="woTech">Technician</label><select id="woTech"><option>Ajay (Rohtak)</option><option>Naveen (Karnal)</option><option>Sunil (Hisar)</option><option>Unassigned</option></select>
+    <div class="row"><button class="btn" id="woCancel">Cancel</button><button class="btn primary" id="woCreate">Create</button></div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="/assets/config.js"></script>
+<script src="/assets/app.js" defer></script>
+</body>
+</html>
