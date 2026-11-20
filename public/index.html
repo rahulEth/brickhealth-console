@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BrickHealth — Support Engineer Console</title>
+<title>BrickHealth — Machine Health Platform</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/styles.css">
 <meta name="theme-color" content="#2a78d6">
@@ -13,6 +13,7 @@
 <div class="app">
   <aside class="sidebar" aria-label="Main navigation">
     <div class="brand"><div class="brand-mark">BH</div>BrickHealth</div>
+    <div class="nav-group" data-role="support">
     <button class="nav-item active" data-view="faults">Fault queue <span class="nav-count" id="navCount">0</span></button>
     <button class="nav-item" data-view="fleet-map">Fleet map</button>
     <button class="nav-item" data-view="machines">Machines</button>
@@ -20,11 +21,28 @@
     <button class="nav-item" data-view="remote-actions">Remote actions <span class="nav-count warn-count" id="apprCount">0</span></button>
     <button class="nav-item" data-view="firmware">Firmware (OTA)</button>
     <button class="nav-item" data-view="reports">Reports</button>
+    </div>
     <div class="nav-group" data-role="field" hidden>
     <button class="nav-item" data-view="my-jobs">My jobs <span class="nav-count" id="myJobCount">0</span></button>
     <button class="nav-item" data-view="scan">Scan machine</button>
     <button class="nav-item" data-view="van">Parts in van</button>
     <button class="nav-item" data-view="my-history">My history</button>
+    </div>
+    <div class="nav-group" data-role="operator" hidden>
+    <button class="nav-item" data-view="op-home">My machine <span class="nav-count" id="opAlertCount">0</span></button>
+    <button class="nav-item" data-view="op-checks">Daily checks</button>
+    <button class="nav-item" data-view="op-shift">Shift log</button>
+    </div>
+    <div class="nav-group" data-role="owner" hidden>
+    <button class="nav-item" data-view="own-home">Overview <span class="nav-count" id="ownAlertCount">0</span></button>
+    <button class="nav-item" data-view="own-production">Production and cost</button>
+    <button class="nav-item" data-view="own-service">Service and warranty</button>
+    </div>
+    <div class="nav-group" data-role="admin" hidden>
+    <button class="nav-item" data-view="adm-users">Users and roles</button>
+    <button class="nav-item" data-view="adm-devices">Gateways</button>
+    <button class="nav-item" data-view="adm-rules">Rules and thresholds</button>
+    <button class="nav-item" data-view="adm-audit">Audit log</button>
     </div>
     <div class="sidebar-foot">Support console · v0.1<br>Tenant: Demo OEM</div>
   </aside>
@@ -40,7 +58,7 @@
         <input id="search" type="search" placeholder="Search machine, site, fault code…">
       </label>
       <label class="role-switch"><span class="hide-sm">View as</span>
-        <select id="roleSel" aria-label="Switch role"><option value="support">Support engineer</option><option value="field">Field engineer</option></select>
+        <select id="roleSel" aria-label="Switch role"><option value="operator">Operator</option><option value="owner">Owner</option><option value="support">Support engineer</option><option value="field">Field engineer</option><option value="admin">Admin</option></select>
       </label>
       <div class="user hide-sm"><div class="avatar" id="avatar">RK</div><span id="userName">Support L2</span></div>
     </header>
@@ -245,6 +263,136 @@
           <div class="table-wrap"><table><thead><tr><th>Work order</th><th>Machine</th><th>Task</th><th class="hide-sm">Root cause</th><th class="num">Hours</th><th>RCA</th></tr></thead><tbody id="histBody"></tbody></table></div>
         </section>
       </div>
+      <!-- ============ OPERATOR ============ -->
+      <div class="view" data-view="op-home" hidden>
+        <section class="card op-hero" id="opHero"></section>
+        <div id="opAlerts"></div>
+        <section class="card">
+          <div class="card-head"><h2>Machine readings</h2><span class="hint">Updates every few seconds</span></div>
+          <div class="card-body"><div class="gauges" id="opGauges"></div></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Need help?</h2></div>
+          <div class="card-body op-actions">
+            <button class="btn big" data-prob="Strange noise">🔊 Strange noise</button>
+            <button class="btn big" data-prob="Oil or water leak">💧 Oil or water leak</button>
+            <button class="btn big" data-prob="Bricks breaking or sticking">🧱 Bricks breaking or sticking</button>
+            <button class="btn big" data-prob="Machine will not start">⛔ Machine will not start</button>
+            <button class="btn big" data-prob="Other problem">✍️ Other problem</button>
+            <button class="btn big primary" id="opCall">📞 Call support</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="view" data-view="op-checks" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Before you start the machine</h2><span class="hint" id="opChkHint"></span></div>
+          <ul class="op-checks" id="opChecks"></ul>
+          <div class="sticky-actions"><button class="btn primary big" id="opChkDone">Checks done</button></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Greasing</h2><span class="hint">Tap after you grease each point</span></div>
+          <div class="card-body op-actions" id="opGrease"></div>
+        </section>
+      </div>
+
+      <div class="view" data-view="op-shift" hidden>
+        <div class="kpis field-kpis" id="opShiftKpis"></div>
+        <section class="card"><div class="card-head"><h2>Bricks per hour today</h2><span class="hint">Counted by the drum sensor</span></div><div class="card-body chart" id="opHourly"></div></section>
+        <section class="card">
+          <div class="card-head"><h2>Why did the machine stop?</h2><span class="hint">Tell us the reason for each stop</span></div>
+          <div id="opStops"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Broken or rejected bricks</h2></div>
+          <div class="card-body"><div class="inline"><input type="number" id="opRejects" class="input" min="0" placeholder="Number of rejected bricks today" style="max-width:280px"><button class="btn primary" id="opRejSave">Save</button></div><div class="muted" id="opRejNote" style="margin-top:8px"></div></div>
+        </section>
+      </div>
+
+      <!-- ============ OWNER ============ -->
+      <div class="view" data-view="own-home" hidden>
+        <div class="kpis" id="ownKpis"></div>
+        <section class="card">
+          <div class="card-head"><h2>My machines</h2><span class="hint">Gupta Brick Industries · 4 machines</span></div>
+          <div class="own-machines" id="ownMachines"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Alerts</h2><span class="hint">In plain words · also sent on WhatsApp</span></div>
+          <div id="ownAlerts"></div>
+        </section>
+      </div>
+
+      <div class="view" data-view="own-production" hidden>
+        <div class="toolbar"><div class="chips" id="ownMachineChips" style="margin-left:0"></div></div>
+        <div class="kpis" id="ownProdKpis"></div>
+        <div class="grid-2 even">
+          <section class="card"><div class="card-head"><h2>Bricks per day</h2><span class="hint">Last 14 days</span></div><div class="card-body chart" id="ownDaily"></div></section>
+          <section class="card"><div class="card-head"><h2>Where the time went</h2><span class="hint">Stopped hours, last 14 days</span></div><div class="card-body chart" id="ownDown"></div></section>
+        </div>
+        <section class="card">
+          <div class="card-head"><h2>Cost per 1,000 bricks</h2><span class="hint" id="costHint"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>Machine</th><th class="num">Bricks (14 d)</th><th class="num">Diesel (L)</th><th class="num">L / 1k bricks</th><th class="num">Diesel ₹ / 1k bricks</th><th class="num">Rejected</th></tr></thead><tbody id="ownCost"></tbody></table></div>
+        </section>
+      </div>
+
+      <div class="view" data-view="own-service" hidden>
+        <div class="toolbar"><span class="hint">Service by BrickHealth support · response target 24 h</span><button class="btn primary" id="ownReqSvc">Request service</button></div>
+        <section class="card">
+          <div class="card-head"><h2>Open service jobs</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Job</th><th>Machine</th><th>Problem</th><th>Technician</th><th>Status</th></tr></thead><tbody id="ownJobs"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Coming up</h2><span class="hint">Routine service due in the next 2 weeks</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Machine</th><th>Service</th><th>Due</th><th></th></tr></thead><tbody id="ownDue"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Warranty</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Machine</th><th>Installed</th><th>Warranty until</th><th>Status</th><th class="hide-sm">Notes</th></tr></thead><tbody id="ownWarranty"></tbody></table></div>
+        </section>
+      </div>
+
+      <!-- ============ ADMIN ============ -->
+      <div class="view" data-view="adm-users" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Users</h2><span class="hint" id="usrHint"></span>
+            <div class="chips"><select id="usrRoleFilter" class="input" style="width:auto"><option value="">All roles</option></select><button class="btn primary" id="usrAdd">Add user</button></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th class="hide-sm">Organisation</th><th class="hide-sm">Phone / email</th><th>Last active</th><th>Status</th><th></th></tr></thead><tbody id="usrBody"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>What each role can do</h2><span class="hint">Checked by the Core API on every request</span></div>
+          <div class="table-wrap"><table class="matrix"><thead id="permHead"></thead><tbody id="permBody"></tbody></table></div>
+        </section>
+      </div>
+
+      <div class="view" data-view="adm-devices" hidden>
+        <div class="kpis" id="gwKpis"></div>
+        <section class="card">
+          <div class="card-head"><h2>Gateways</h2><span class="hint">Device identity, certificate and link to machine</span><div class="chips"><button class="btn primary" id="gwAdd">Provision gateway</button></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Serial</th><th>Machine</th><th class="hide-sm">Firmware</th><th>Signal</th><th>Certificate</th><th>Last seen</th><th></th></tr></thead><tbody id="gwBody"></tbody></table></div>
+        </section>
+      </div>
+
+      <div class="view" data-view="adm-rules" hidden>
+        <div class="toolbar"><div class="chips" id="ruleModelChips" style="margin-left:0"></div><span class="hint">Changes are versioned, logged and pushed to gateways on their next sync.</span></div>
+        <section class="card">
+          <div class="card-head"><h2>Fault rules</h2><span class="hint" id="ruleHint"></span></div>
+          <div class="table-wrap"><table><thead><tr><th>Code</th><th>Rule</th><th>Metric</th><th>Threshold</th><th>Severity</th><th class="hide-sm">Runs on</th><th>On</th></tr></thead><tbody id="ruleBody"></tbody></table></div>
+          <div class="sticky-actions"><button class="btn primary" id="ruleSave" disabled>Save changes</button><button class="btn" id="ruleReset" disabled>Discard</button><span class="hint" id="ruleDirty"></span></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>Alert routing</h2><span class="hint">Who is told, and how</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Severity</th><th>Operator</th><th>Owner</th><th>Support</th><th>Escalate if not acknowledged</th></tr></thead><tbody id="routeBody"></tbody></table></div>
+        </section>
+      </div>
+
+      <div class="view" data-view="adm-audit" hidden>
+        <section class="card">
+          <div class="card-head"><h2>Audit log</h2><span class="hint">Every change and remote action, newest first</span><div class="chips" id="auditChips"></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Who</th><th>Role</th><th>Action</th><th class="hide-sm">Detail</th></tr></thead><tbody id="auditBody"></tbody></table></div>
+        </section>
+      </div>
+
+<!-- generic form modal (operator problem, owner request, admin add/provision) -->
     </main>
   </div>
 </div>
@@ -282,6 +430,14 @@
     <label for="woTask">Task</label><textarea id="woTask" placeholder="e.g. Replace drum bearing, check chain tension"></textarea>
     <label for="woTech">Technician</label><select id="woTech"><option>Ajay (Rohtak)</option><option>Naveen (Karnal)</option><option>Sunil (Hisar)</option><option>Unassigned</option></select>
     <div class="row"><button class="btn" id="woCancel">Cancel</button><button class="btn primary" id="woCreate">Create</button></div>
+  </div>
+</div>
+<div class="modal-bg" id="formModalBg" role="dialog" aria-modal="true" aria-labelledby="formTitle">
+  <div class="modal">
+    <h3 id="formTitle"></h3>
+    <div class="muted" id="formSub"></div>
+    <div id="formBody"></div>
+    <div class="row"><button class="btn" id="formCancel">Cancel</button><button class="btn primary" id="formOk">Save</button></div>
   </div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>

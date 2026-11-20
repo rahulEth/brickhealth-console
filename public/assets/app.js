@@ -364,7 +364,8 @@ const titles = { 'faults': 'Fault queue', 'fleet-map': 'Fleet map', 'machines': 
 const renderers = {};
 function show(view) {
   if (!titles[view]) view = 'faults';
-  if (typeof applyRole === 'function') applyRole(fieldViews.includes(view) ? 'field' : 'support');
+  applyRole(roleOf(view));
+  if (view !== 'op-home' && typeof stopOp === 'function') stopOp();
   if (view !== 'my-jobs' && typeof stopBle === 'function') stopBle();
   document.querySelectorAll('.view').forEach(v => v.hidden = v.dataset.view !== view);
   document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === view));
@@ -820,5 +821,327 @@ function applyRole(role) {
   document.querySelector('.sidebar-foot').innerHTML = role === 'field' ? 'Field app · v0.1<br>Works offline on site' : 'Support console · v0.1<br>Tenant: Demo OEM';
 }
 $('#roleSel').onchange = e => { location.hash = e.target.value === 'field' ? 'my-jobs' : 'faults'; };
+
+// ================= OPERATOR / OWNER / ADMIN =================
+const audit = [
+  { t: 'Today 09:12', who: 'Admin', role: 'Admin', type: 'Rules', a: 'Rules v13 published', d: 'DRM-02 sync threshold 90% → 92% (BMM-310)' },
+  { t: 'Today 08:40', who: 'Admin', role: 'Admin', type: 'Users', a: 'User added', d: 'Deepak · Operator · Shiv Shakti Bricks' },
+  { t: 'Yesterday 18:05', who: 'System', role: 'System', type: 'Firmware', a: 'Rollout ring 2 started', d: 'gw 1.5.0-rc1 to 38 gateways' },
+  { t: 'Yesterday 16:22', who: 'Admin', role: 'Admin', type: 'Gateways', a: 'Certificate renewed', d: 'GW-240118 · BMM-160 #0102' },
+  { t: '15 Nov 11:03', who: 'Admin', role: 'Admin', type: 'Users', a: 'Role changed', d: 'Priya: Support L1 → Support L2' }
+];
+function logAudit(type, a, d, who = $('#userName') ? $('#userName').textContent : 'You', role = currentRoleLabel()) {
+  audit.unshift({ t: 'Today ' + new Date().toTimeString().slice(0, 5), who, role, type, a, d });
+}
+let currentRole = 'support';
+const roleLabels = { support: 'Support engineer', field: 'Field engineer', operator: 'Operator', owner: 'Owner', admin: 'Admin' };
+function currentRoleLabel() { return roleLabels[currentRole] || ''; }
+
+// ---------- Operator ----------
+const OP_MACHINE = 'BMM-310 #0019', OP_NAME = 'Mahesh';
+const opPlain = {
+  'DRM-02': ['🐢', 'Slow down the truck', 'The truck is moving faster than the drum, so bricks land with gaps. Drive a little slower.'],
+  'SRV-01': ['🛢️', 'Engine oil change due soon', 'A technician will plan it. Keep working; nothing to do now.'],
+  'PRC-03': ['🪣', 'Refill the release agent tank', 'Tank is almost empty. Refill now to stop bricks sticking.'],
+  'PRC-01': ['💧', 'Check the water supply', 'Water to the mixer is low. Check the pipe and tank.'],
+  'HYD-02': ['🌡️', 'Hydraulic oil is hot', 'Stop for 15 minutes if it keeps rising. Support has been told.'],
+  'HYD-01': ['⛔', 'Machine stopped: jam', 'Press the E-stop. Do not open the chute. A technician is coming.'],
+  'MIX-02': ['⚙️', 'Mixer working too hard', 'Clay may be too dry. Add a little water.'],
+  'OPR-01': ['📝', 'Your report was sent', 'Support has your message and will call you.']
+};
+const opGaugeDefs = [
+  { k: 'Engine oil pressure', u: 'bar', min: 0, max: 6, v: 4.1, lo: 1.5, d: 1 },
+  { k: 'Engine temperature', u: '°C', min: 40, max: 120, v: 85, hi: 100, d: 0 },
+  { k: 'Hydraulic pressure', u: 'bar', min: 0, max: 400, v: 232, hi: 300, d: 0 },
+  { k: 'Mixer load', u: '%', min: 0, max: 100, v: 71, hi: 90, d: 0 },
+  { k: 'Drum speed', u: 'per min', min: 0, max: 30, v: 21, d: 0 },
+  { k: 'Drum and truck speed match', u: '%', min: 80, max: 100, v: 86, lo: 92, d: 0 }
+];
+let opTimer = null, opShiftStart = '06:00', opChecks = {}, opGreaseLog = {}, opRejects = null, opSlowedDown = false;
+const opStops = [
+  { t: '07:52', min: 14, reason: '' }, { t: '09:45', min: 6, reason: 'Clay or hopper empty' }, { t: '11:20', min: 22, reason: '' }
+];
+const stopReasons = ['Clay or hopper empty', 'Water problem', 'Moving to new row', 'Breakdown', 'Tea or lunch break', 'Release agent refill', 'Waiting for loader', 'Other'];
+function opMachine() { return machines.find(m => m.id === OP_MACHINE); }
+function opFaults() { return faults.filter(f => f.machine === OP_MACHINE && f.status !== 'Closed' && !f.opAck); }
+function stopOp() { clearInterval(opTimer); opTimer = null; }
+
+function gaugeSvg(g) {
+  const p = Math.max(0, Math.min(1, (g.v - g.min) / (g.max - g.min)));
+  const out = (g.hi != null && g.v > g.hi) || (g.lo != null && g.v < g.lo);
+  const ang = Math.PI * (1 - p), x = 60 + 46 * Math.cos(ang), y = 60 - 46 * Math.sin(ang);
+  const band = v => { const q = (v - g.min) / (g.max - g.min), a = Math.PI * (1 - q); return [60 + 46 * Math.cos(a), 60 - 46 * Math.sin(a)]; };
+  let limit = '';
+  if (g.hi != null) { const [lx, ly] = band(g.hi); limit = `<path d="M${lx} ${ly} A46 46 0 0 1 106 60" fill="none" stroke="var(--critical)" stroke-width="10" opacity=".18"/>`; }
+  if (g.lo != null) { const [lx, ly] = band(g.lo); limit = `<path d="M14 60 A46 46 0 0 1 ${lx} ${ly}" fill="none" stroke="var(--critical)" stroke-width="10" opacity=".18"/>`; }
+  return `<svg viewBox="0 0 120 72" role="img" aria-label="${esc(g.k)} ${g.v} ${esc(g.u)}">
+    <path d="M14 60 A46 46 0 0 1 106 60" fill="none" stroke="var(--grid)" stroke-width="10" stroke-linecap="round"/>${limit}
+    ${p > 0.005 ? `<path d="M14 60 A46 46 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)}" fill="none" stroke="${out ? 'var(--critical)' : 'var(--series-1)'}" stroke-width="10" stroke-linecap="round"/>` : ''}
+    <text x="60" y="56" text-anchor="middle" font-size="18" font-weight="700" fill="var(--text-primary)">${g.v.toFixed(g.d)}</text>
+    <text x="60" y="69" text-anchor="middle" font-size="9" fill="var(--text-muted)">${esc(g.u)}</text></svg>`;
+}
+function drawGauges() {
+  $('#opGauges').innerHTML = opGaugeDefs.map(g => { const hi = g.hi != null && g.v > g.hi, lo = g.lo != null && g.v < g.lo;
+    return `<div class="gauge">${gaugeSvg(g)}<div class="g-k">${esc(g.k)}</div><div class="g-s" style="color:${hi || lo ? 'var(--critical)' : 'var(--good)'}">${hi ? '▲ Too high' : lo ? '▼ Too low' : '✓ OK'}</div></div>`; }).join('');
+}
+renderers['op-home'] = function () {
+  const m = opMachine(), fs = opFaults();
+  const target = Math.round(m.rated * 0.7 * 10 / 100) * 100, made = m.bricks;
+  const crit = fs.some(f => f.sev === 'critical'), warn = fs.length > 0;
+  const light = m.state === 'Fault stop' || crit ? ['var(--critical)', '■', 'Stopped — fault'] : m.state === 'Producing' ? [warn ? 'var(--warning)' : 'var(--good)', warn ? '!' : '✓', warn ? 'Running — check alert' : 'Running well'] : ['var(--info)', '‖', m.state];
+  $('#opHero').innerHTML = `<div class="op-state"><div class="op-light" style="background:${light[0]}">${light[1]}</div><div><h2>${light[2]}</h2><div class="muted">${esc(m.id)} · ${esc(m.site)}, ${esc(m.town)} · shift since ${opShiftStart}</div></div></div>
+    <div class="op-target"><div class="muted">Bricks today</div><div class="big-num">${fmtN(made)} <span class="muted" style="font-size:15px;font-weight:500">of ${fmtN(target)} target</span></div><div class="meter"><span style="width:${Math.min(100, made / target * 100)}%"></span></div></div>`;
+  $('#opAlerts').innerHTML = fs.map(f => { const [ic, h, txt] = opPlain[f.code] || ['⚠️', f.title, 'Support has been told.'];
+    return `<div class="op-alert ${f.sev}"><div class="ic" aria-hidden="true">${ic}</div><div><b>${esc(h)}</b><span class="muted">${esc(txt)}</span></div><button class="btn" data-ack="${f.id}">OK, done</button></div>`; }).join('');
+  $('#opAlerts').querySelectorAll('[data-ack]').forEach(b => b.onclick = () => { const f = faults.find(x => x.id === +b.dataset.ack); f.opAck = true; f.events.push(['now', `Operator ${OP_NAME} confirmed: ${(opPlain[f.code] || [, f.title])[1]}`]); if (f.code === 'DRM-02') opSlowedDown = true; toast('Thanks — support can see you acted'); renderers['op-home'](); renderDetail(); updateRoleCounts(); });
+  drawGauges();
+  stopOp();
+  opTimer = setInterval(() => {
+    opGaugeDefs.forEach(g => { let target = g.v; if (g.k.startsWith('Drum and truck') && opSlowedDown) target = 98;
+      const base = { 'Engine oil pressure': 4.1, 'Engine temperature': 86, 'Hydraulic pressure': 232, 'Mixer load': 71, 'Drum speed': 21 }[g.k];
+      if (base != null) target = base;
+      g.v = Math.max(g.min, Math.min(g.max, g.v + (target - g.v) * 0.3 + (Math.random() - .5) * (g.max - g.min) * 0.012)); });
+    m.bricks += Math.round(m.rated / 3600 * 3 * 0.7);
+    if ($('[data-view="op-home"].view') && !$('[data-view="op-home"].view').hidden) { drawGauges(); const bn = $('#opHero .big-num'); if (bn) bn.firstChild.textContent = fmtN(m.bricks) + ' '; }
+  }, 3000);
+  updateRoleCounts();
+};
+function makeOperatorFault(problem, note) {
+  const m = opMachine(), id = Math.max(...faults.map(f => f.id)) + 1;
+  faults.push({ id, sev: problem === 'Machine will not start' ? 'critical' : 'warning', code: 'OPR-01', title: 'Operator report: ' + problem, machine: m.id, site: m.site + ', ' + m.town, state: m.state, age: 0, status: 'New', operator: OP_NAME, fw: m.fw,
+    engine: m.engine, module: m.module, metric: { name: 'Engine speed', unit: 'rpm', base: 1620, limit: null, shape: 'drift', peak: 1610 },
+    readings: { engine: [['Oil pressure', opGaugeDefs[0].v.toFixed(1) + ' bar', 0], ['Engine temp', Math.round(opGaugeDefs[1].v) + ' °C', 0]], module: [['Hydraulic pressure', Math.round(opGaugeDefs[2].v) + ' bar', 0], ['Mixer load', Math.round(opGaugeDefs[3].v) + ' %', 0]] },
+    cause: `Reported by operator ${OP_NAME}: ${problem}${note ? ' — “' + note + '”' : ''}. Check readings and call the operator.`, similar: [], events: [['now', `Operator report from the machine app: ${problem}`]] });
+  renderQueue(); updateRoleCounts();
+}
+document.querySelectorAll('[data-prob]').forEach(b => b.onclick = () => openForm({
+  title: 'Report: ' + b.dataset.prob, sub: `${OP_MACHINE} · support will call you back`, ok: 'Send to support',
+  body: `<label>Tell us more (optional)</label><textarea id="ff_note" placeholder="Where is it? When did it start?"></textarea><label>Photo (optional)</label><input type="file" id="ff_photo" accept="image/*">`,
+  onOk: () => { makeOperatorFault(b.dataset.prob, $('#ff_note').value.trim()); logAudit('Reports', 'Operator problem report', `${OP_MACHINE}: ${b.dataset.prob}`); toast('Sent — support will call you'); return true; }
+}));
+$('#opCall').onclick = () => toast('Calling support: 1800-000-000 (demo)');
+
+const opCheckList = [['Engine oil level', 'Use the dipstick; between MIN and MAX'], ['Coolant level', 'Check the radiator tank when engine is cold'], ['Hydraulic oil level', 'Sight glass on the hydraulic tank'], ['Release agent tank filled', ''], ['Water tank and pipe OK', 'No kinks or leaks'], ['Guards closed, E-stop works', 'Press and release the E-stop once'], ['No leaks under the machine', 'Look for oil or water on the ground']];
+const greasePoints = ['Drum bearings', 'Mixer shaft bearings', 'Chain and sprockets', 'Wheel hubs'];
+renderers['op-checks'] = function () {
+  $('#opChecks').innerHTML = opCheckList.map(([t, why], i) => `<li><span>${esc(t)}${why ? `<span class="why">${esc(why)}</span>` : ''}</span><span class="seg" role="group" aria-label="${esc(t)}"><button data-i="${i}" data-v="ok" class="${opChecks[i] === 'ok' ? 'on-ok' : ''}">OK</button><button data-i="${i}" data-v="bad" class="${opChecks[i] === 'bad' ? 'on-bad' : ''}">Problem</button></span></li>`).join('');
+  $('#opChecks').querySelectorAll('button').forEach(b => b.onclick = () => { opChecks[b.dataset.i] = b.dataset.v; renderers['op-checks'](); });
+  const n = Object.keys(opChecks).length;
+  $('#opChkHint').textContent = `${n} of ${opCheckList.length} answered`;
+  $('#opGrease').innerHTML = greasePoints.map(g => `<button class="btn big" data-g="${esc(g)}">${opGreaseLog[g] ? '✅' : '🛢️'} ${esc(g)}${opGreaseLog[g] ? `<span class="why muted" style="display:block;font-size:12px">Done at ${opGreaseLog[g]}</span>` : ''}</button>`).join('');
+  $('#opGrease').querySelectorAll('[data-g]').forEach(b => b.onclick = () => { opGreaseLog[b.dataset.g] = new Date().toTimeString().slice(0, 5); if (b.dataset.g === 'Drum bearings') opMachine().wear[5][1] = 0; toast(`${b.dataset.g} greased — logged`); renderers['op-checks'](); });
+};
+$('#opChkDone').onclick = () => {
+  if (Object.keys(opChecks).length < opCheckList.length) { toast('Answer every check first'); return; }
+  const bad = opCheckList.filter((_, i) => opChecks[i] === 'bad').map(c => c[0]);
+  if (bad.length) { makeOperatorFault('Pre-start check failed: ' + bad.join(', '), ''); toast('Support told about: ' + bad.join(', ')); }
+  else toast('All checks OK — safe to start');
+  logAudit('Reports', 'Daily checks submitted', `${OP_MACHINE}: ${bad.length ? bad.length + ' problem(s)' : 'all OK'}`);
+};
+renderers['op-shift'] = function () {
+  const m = opMachine(), r = rng(19), hours = ['06', '07', '08', '09', '10', '11', '12'];
+  const per = hours.map((h, i) => [h + ':00', Math.round((m.rated * (0.55 + r() * 0.3)) / 100) * 100]);
+  const stopMin = opStops.reduce((s, x) => s + x.min, 0);
+  $('#opShiftKpis').innerHTML = [['Bricks today', fmtN(m.bricks), 'counted by the drum'], ['Stopped time', stopMin + ' min', opStops.length + ' stops'], ['Diesel used', Math.round(m.bricks / 1000 * (m.fuel || 1.9)) + ' L', (m.fuel || 1.9).toFixed(2) + ' L per 1,000 bricks'], ['Rejected', opRejects == null ? '—' : fmtN(opRejects), opRejects == null ? 'enter below' : ((opRejects / Math.max(1, m.bricks)) * 100).toFixed(1) + '% of bricks']]
+    .map(([l, v, mm]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div><div class="meta">${mm}</div></div>`).join('');
+  vbars($('#opHourly'), per, 'bricks');
+  $('#opStops').innerHTML = opStops.map((s, i) => `<div class="stop-row"><div><b>${s.t}</b><div class="muted">${s.min} min stopped</div></div><div>${s.reason ? '<span class="sev good"><span class="dot">✓</span>Reason given</span>' : '<span class="sev warning"><span class="dot">!</span>Reason needed</span>'}</div>
+    <select class="input" data-i="${i}" aria-label="Reason for stop at ${s.t}"><option value="">Choose reason…</option>${stopReasons.map(x => `<option ${x === s.reason ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`).join('');
+  $('#opStops').querySelectorAll('select').forEach(sel => sel.onchange = () => { opStops[+sel.dataset.i].reason = sel.value; renderers['op-shift'](); toast('Saved'); });
+  $('#opRejNote').textContent = opRejects == null ? 'Your owner sees this in the quality figure.' : `Saved: ${fmtN(opRejects)} rejected bricks.`;
+};
+$('#opRejSave').onclick = () => { const v = parseInt($('#opRejects').value, 10); if (isNaN(v) || v < 0) { toast('Enter a number'); return; } opRejects = v; renderers['op-shift'](); toast('Rejected bricks saved'); };
+
+// ---------- Owner ----------
+const OWNER_MACHINES = ['BMM-310 #0019', 'BMM-160 #0142', 'BMM-310 #0044', 'BMM-160 #0231'];
+let dieselPrice = 90, ownSel = 'All';
+const ownerPlain = {
+  'HYD-01': 'Stopped by a clay jam in the feed chute. Technician assigned; usually fixed in 1–2 hours.',
+  'BRG-01': 'Drum bearing is wearing out. Replacement is booked; greasing was overdue.',
+  'DRM-02': 'Truck is driving faster than the drum, so some bricks land badly. Operator has been told.',
+  'HYD-02': 'Hydraulic oil running hot because the filter is blocked. Filter change booked.',
+  'MIX-02': 'Mixer is working harder than normal: clay may be dry or paddles worn. Being checked.',
+  'SRV-01': 'Engine oil change due soon. We will schedule it with you.',
+  'OPR-01': 'Your operator reported a problem. Support is calling them.'
+};
+function ownMachines() { return OWNER_MACHINES.map(id => machines.find(m => m.id === id)).filter(Boolean); }
+function ownFaults() { return faults.filter(f => OWNER_MACHINES.includes(f.machine) && f.status !== 'Closed'); }
+function dailySeries(m) { const r = rng(m.id.length * 97 + parseInt(m.id.slice(-4), 10)); return Array.from({ length: 14 }, (_, i) => { const off = r() < 0.08; return off ? 0 : Math.round(m.rated * 10 * (0.45 + r() * 0.3) / 1000) * 1000; }); }
+renderers['own-home'] = function () {
+  const ms = ownMachines(), fs = ownFaults();
+  const today = ms.reduce((s, m) => s + m.bricks, 0), month = ms.reduce((s, m) => s + dailySeries(m).reduce((a, b) => a + b, 0), 0) / 14 * 17;
+  const fuel = ms.filter(m => m.fuel).reduce((s, m, _, a) => s + m.fuel / a.length, 0);
+  const running = ms.filter(m => m.state === 'Producing').length;
+  $('#ownKpis').innerHTML = [['Bricks today', fmtN(today), 'all 4 machines'], ['This month', (month / 100000).toFixed(1) + ' lakh', 'estimate to date'], ['Machines running', `${running} of ${ms.length}`, ms.length - running ? `${ms.length - running} stopped or idle` : 'all running'], ['Diesel per 1,000 bricks', fuel.toFixed(2) + ' L', '≈ ₹' + Math.round(fuel * dieselPrice) + ' per 1,000'], ['Open problems', fs.filter(f => f.status !== 'Scheduled').length, fs.filter(f => f.sev === 'critical').length + ' stopping a machine']]
+    .map(([l, v, mm]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div><div class="meta">${mm}</div></div>`).join('');
+  $('#ownMachines').innerHTML = ms.map(m => { const f = fs.filter(x => x.machine === m.id).sort((a, b) => sevRank[a.sev] - sevRank[b.sev])[0];
+    return `<div class="own-m" data-id="${esc(m.id)}" tabindex="0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b>${esc(m.id)}</b>${stateBadge(m.state)}</div><div class="muted">${esc(m.site)}, ${esc(m.town)}</div>
+      <div class="row2"><div><span class="muted">Bricks today</span><b>${fmtN(m.bricks)}</b></div><div><span class="muted">Health</span><b>${Math.round((m.engine + m.module) / 2)}</b></div><div><span class="muted">Diesel / 1k</span><b>${m.fuel ? m.fuel.toFixed(2) + ' L' : '—'}</b></div></div>
+      ${f ? `<div style="margin-top:10px">${sevBadge(f.sev)} <span class="muted">${esc((ownerPlain[f.code] || f.title).split('.')[0])}</span></div>` : '<div style="margin-top:10px"><span class="sev good"><span class="dot">✓</span>No problems</span></div>'}</div>`; }).join('');
+  $('#ownMachines').querySelectorAll('.own-m').forEach(el => { el.onclick = () => openMachine(machines.find(m => m.id === el.dataset.id)); el.onkeydown = e => { if (e.key === 'Enter') el.onclick(); }; });
+  $('#ownAlerts').innerHTML = fs.sort((a, b) => sevRank[a.sev] - sevRank[b.sev]).map(f => { const wo = workOrders.find(w => w.m === f.machine && w.code === f.code && w.stage !== 'Done');
+    return `<div class="own-alert">${sevBadge(f.sev)}<div><b>${esc(f.machine)}</b> <span class="muted">${esc(f.site)}</span><div>${esc(ownerPlain[f.code] || f.title)}</div></div><span class="muted">${wo ? esc(wo.tech === 'Unassigned' ? 'Not yet assigned' : wo.tech) : fmtAge(f.age) + ' ago'}</span></div>`; }).join('') || '<div class="empty">No open problems.</div>';
+  updateRoleCounts();
+};
+renderers['own-production'] = function () {
+  const ms = ownMachines();
+  chipRow($('#ownMachineChips'), ['All'].concat(ms.map(m => m.id)), ownSel, v => { ownSel = v; renderers['own-production'](); });
+  const sel = ownSel === 'All' ? ms : ms.filter(m => m.id === ownSel);
+  const days = Array.from({ length: 14 }, (_, i) => { const d = new Date(Date.now() - (13 - i) * 864e5); return d.getDate() + ' ' + d.toLocaleString('en', { month: 'short' }); });
+  const series = days.map((d, i) => [d.split(' ')[0], sel.reduce((s, m) => s + dailySeries(m)[i], 0)]);
+  const total = series.reduce((s, x) => s + x[1], 0), avg = total / 14;
+  const stopsH = [['Breakdown', 31], ['Clay or hopper empty', 22], ['Waiting for loader', 14], ['Moving to new row', 11], ['Tea or lunch break', 9], ['Reason not given', 7]].map(([k, v]) => [k, Math.round(v * sel.length / ms.length)]);
+  const rejPct = opRejects != null && sel.some(m => m.id === OP_MACHINE) ? (opRejects / Math.max(1, opMachine().bricks) * 100) : 2.4;
+  $('#ownProdKpis').innerHTML = [['Bricks (14 days)', (total / 100000).toFixed(2) + ' lakh', fmtN(Math.round(avg)) + ' per day'], ['Best day', fmtN(Math.max(...series.map(s => s[1]))), ''], ['Stopped time', stopsH.reduce((s, x) => s + x[1], 0) + ' h', 'all reasons'], ['Rejected bricks', rejPct.toFixed(1) + '%', 'from operator entries']]
+    .map(([l, v, mm]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div><div class="meta">${mm}</div></div>`).join('');
+  vbars($('#ownDaily'), series, 'bricks');
+  hbars($('#ownDown'), stopsH, 'h');
+  $('#costHint').innerHTML = `Diesel price ₹ <input type="number" id="dieselPrice" class="thr" style="width:70px" value="${dieselPrice}" aria-label="Diesel price per litre"> per litre`;
+  $('#dieselPrice').onchange = e => { dieselPrice = +e.target.value || 90; renderers['own-production'](); };
+  $('#ownCost').innerHTML = sel.map(m => { const b = dailySeries(m).reduce((a, x) => a + x, 0), lpk = m.fuel || 1.9, l = Math.round(b / 1000 * lpk), rj = m.id === OP_MACHINE && opRejects != null ? (opRejects / Math.max(1, m.bricks) * 100).toFixed(1) + '%' : '—';
+    return `<tr style="cursor:default"><td><b>${esc(m.id)}</b><div class="muted">${esc(m.site)}</div></td><td class="num">${fmtN(b)}</td><td class="num">${fmtN(l)}</td><td class="num">${lpk.toFixed(2)}</td><td class="num">₹${fmtN(Math.round(lpk * dieselPrice))}</td><td class="num">${rj}</td></tr>`; }).join('');
+};
+const warranty = [['BMM-310 #0019', 'Mar 2025', 'Mar 2027', 'Active', ''], ['BMM-160 #0142', 'Nov 2024', 'Nov 2026', 'Ending soon', 'Bearing claim WO-1182 under review: greasing was overdue'], ['BMM-310 #0044', 'Jan 2026', 'Jan 2028', 'Active', ''], ['BMM-160 #0231', 'Sep 2023', 'Sep 2025', 'Expired', 'Paid service; extended cover available']];
+const ownStatus = { 'Open': 'Not yet assigned', 'Assigned': 'Technician assigned', 'In progress': 'Being repaired', 'Waiting for parts': 'Waiting for parts', 'Done': 'Fixed' };
+renderers['own-service'] = function () {
+  const jobs = workOrders.filter(w => OWNER_MACHINES.includes(w.m) && w.stage !== 'Done');
+  $('#ownJobs').innerHTML = jobs.map(w => `<tr style="cursor:default"><td class="code">${w.id}</td><td>${esc(w.m)}</td><td>${esc(w.task)}</td><td>${esc(w.tech)}</td><td><span class="pill ${w.stage === 'In progress' ? 'ack' : ''}">${ownStatus[w.stage]}</span></td></tr>`).join('') || '<tr><td colspan="5" class="muted">No open jobs.</td></tr>';
+  const due = []; ownMachines().forEach(m => m.wear.forEach(([n, u, l, unit]) => { const p = u / l; if (p >= 0.8) due.push([m.id, n, p >= 1 ? 'Overdue' : `in about ${Math.max(1, Math.round((l - u) / (unit === 'h' ? 10 : unit === 'days' ? 1 : 5000)))} ${unit === 'days' ? 'days' : 'working days'}`]); }));
+  $('#ownDue').innerHTML = due.map(([m, n, d]) => `<tr style="cursor:default"><td>${esc(m)}</td><td>${esc(n)}</td><td>${d === 'Overdue' ? '<span class="sev critical"><span class="dot">!</span>Overdue</span>' : esc(d)}</td><td><button class="btn" data-book="${esc(m)}|${esc(n)}">Book</button></td></tr>`).join('') || '<tr><td colspan="4" class="muted">Nothing due.</td></tr>';
+  $('#ownDue').querySelectorAll('[data-book]').forEach(b => b.onclick = () => { const [m, n] = b.dataset.book.split('|'); workOrders.push({ id: 'WO-' + (++woSeq), m, code: 'SRV', task: 'Routine service: ' + n, tech: 'Unassigned', due: 'Requested', stage: 'Open', parts: '—' }); toast('Service requested — support will confirm a date'); updateCounts(); renderers['own-service'](); });
+  $('#ownWarranty').innerHTML = warranty.map(([m, i, u, s, n]) => `<tr style="cursor:default"><td>${esc(m)}</td><td>${i}</td><td>${u}</td><td>${s === 'Active' ? '<span class="sev good"><span class="dot">✓</span>Active</span>' : s === 'Expired' ? '<span class="sev info"><span class="dot">i</span>Expired</span>' : '<span class="sev warning"><span class="dot">!</span>Ending soon</span>'}</td><td class="hide-sm muted">${esc(n)}</td></tr>`).join('');
+};
+$('#ownReqSvc').onclick = () => openForm({ title: 'Request service', sub: 'Support replies within 24 hours', ok: 'Send request',
+  body: `<label>Machine</label><select id="ff_m">${OWNER_MACHINES.map(m => `<option>${m}</option>`).join('')}</select><label>What is the problem?</label><textarea id="ff_p" placeholder="e.g. Drum making a grinding noise since morning"></textarea>`,
+  onOk: () => { const p = $('#ff_p').value.trim(); if (!p) { toast('Describe the problem'); return false; } workOrders.push({ id: 'WO-' + (++woSeq), m: $('#ff_m').value, code: 'Owner', task: p, tech: 'Unassigned', due: 'Requested', stage: 'Open', parts: '—' }); logAudit('Reports', 'Owner service request', `${$('#ff_m').value}: ${p}`); updateCounts(); renderers['own-service'](); toast('Request sent'); return true; } });
+
+// ---------- Admin ----------
+const roles = ['Operator', 'Owner', 'Support engineer', 'Field engineer', 'Quality', 'Admin'];
+const users = [
+  ['Mahesh', 'Operator', 'Om Sai Bhatta', '+91 98•••••210', 'now', 'Active'], ['Ramesh', 'Operator', 'Shree Ganesh Bhatta', '+91 97•••••118', '2 h ago', 'Active'], ['Deepak', 'Operator', 'Shiv Shakti Bricks', '+91 99•••••542', '1 h ago', 'Active'],
+  ['S. Gupta', 'Owner', 'Gupta Brick Industries', 'gupta@•••.in', '20 min ago', 'Active'], ['R. Sharma', 'Owner', 'Maa Durga Bricks', '+91 98•••••777', '3 d ago', 'Active'],
+  ['Priya', 'Support engineer', 'Demo OEM', 'priya@•••.com', 'now', 'Active'], ['Rahul K.', 'Support engineer', 'Demo OEM', 'rahul@•••.com', 'now', 'Active'], ['Amit', 'Support engineer', 'Demo OEM', 'amit@•••.com', '5 h ago', 'Active'],
+  ['Ajay', 'Field engineer', 'Demo OEM · Rohtak', '+91 96•••••301', '10 min ago', 'Active'], ['Naveen', 'Field engineer', 'Demo OEM · Karnal', '+91 95•••••612', '1 h ago', 'Active'], ['Sunil', 'Field engineer', 'Demo OEM · Hisar', '+91 94•••••908', '2 d ago', 'Disabled'],
+  ['Neha', 'Quality', 'Demo OEM', 'neha@•••.com', 'yesterday', 'Active'], ['Admin', 'Admin', 'Demo OEM', 'admin@•••.com', 'now', 'Active']
+].map(([name, role, org, contact, last, status]) => ({ name, role, org, contact, last, status }));
+const perms = [
+  ['See own machine or fleet', [1, 1, 1, 1, 1, 1]], ['See all customers’ machines', [0, 0, 1, 1, 1, 1]], ['Report a problem', [1, 1, 1, 1, 0, 0]], ['Acknowledge faults', [0, 0, 1, 1, 0, 0]],
+  ['Send low-risk remote commands', [0, 0, 1, 0, 0, 0]], ['Approve high-risk commands', [0, 0, 1, 0, 0, 0]], ['Create and assign work orders', [0, 0, 1, 0, 0, 1]], ['Close jobs on site', [0, 0, 0, 1, 0, 0]],
+  ['Request service', [0, 1, 0, 0, 0, 0]], ['See cost and production reports', [0, 1, 1, 0, 1, 1]], ['Edit rules and thresholds', [0, 0, 0, 0, 1, 1]], ['Install firmware', [0, 0, 0, 0, 0, 1]], ['Manage users and gateways', [0, 0, 0, 0, 0, 1]]
+];
+renderers['adm-users'] = function () {
+  const rf = $('#usrRoleFilter'); if (rf.options.length === 1) rf.innerHTML += roles.map(r => `<option>${r}</option>`).join('');
+  const list = users.filter(u => !rf.value || u.role === rf.value).filter(u => !query || (u.name + u.org + u.role).toLowerCase().includes(query));
+  $('#usrHint').textContent = `${list.length} of ${users.length} users`;
+  $('#usrBody').innerHTML = list.map(u => { const i = users.indexOf(u); return `<tr style="cursor:default"><td><b>${esc(u.name)}</b></td><td><select class="input" data-role="${i}" style="width:auto;padding:4px 6px" aria-label="Role for ${esc(u.name)}">${roles.map(r => `<option ${r === u.role ? 'selected' : ''}>${r}</option>`).join('')}</select></td><td class="hide-sm">${esc(u.org)}</td><td class="hide-sm muted">${esc(u.contact)}</td><td>${esc(u.last)}</td>
+    <td>${u.status === 'Active' ? '<span class="sev good"><span class="dot">✓</span>Active</span>' : '<span class="sev info"><span class="dot">i</span>Disabled</span>'}</td><td><button class="btn" data-tog="${i}">${u.status === 'Active' ? 'Disable' : 'Enable'}</button></td></tr>`; }).join('');
+  $('#usrBody').querySelectorAll('[data-tog]').forEach(b => b.onclick = () => { const u = users[+b.dataset.tog]; u.status = u.status === 'Active' ? 'Disabled' : 'Active'; logAudit('Users', u.status === 'Active' ? 'User enabled' : 'User disabled', `${u.name} · ${u.role}`); toast(`${u.name} ${u.status.toLowerCase()}`); renderers['adm-users'](); });
+  $('#usrBody').querySelectorAll('[data-role]').forEach(s => s.onchange = () => { const u = users[+s.dataset.role], old = u.role; u.role = s.value; logAudit('Users', 'Role changed', `${u.name}: ${old} → ${u.role}`); toast('Role updated'); });
+  $('#permHead').innerHTML = `<tr><th>Permission</th>${roles.map(r => `<th>${r}</th>`).join('')}</tr>`;
+  $('#permBody').innerHTML = perms.map(([p, v]) => `<tr style="cursor:default"><td>${esc(p)}</td>${v.map(x => `<td>${x ? '<span class="tick" aria-label="allowed">✓</span>' : '<span class="cross" aria-label="not allowed">—</span>'}</td>`).join('')}</tr>`).join('');
+};
+$('#usrRoleFilter').onchange = () => renderers['adm-users']();
+$('#search').addEventListener('input', () => { const v = document.querySelector('[data-view="adm-users"].view'); if (v && !v.hidden) renderers['adm-users'](); });
+$('#usrAdd').onclick = () => openForm({ title: 'Add user', sub: 'They get an SMS or email invite to set up login', ok: 'Send invite',
+  body: `<label>Name</label><input type="text" id="ff_n"><label>Phone or email</label><input type="text" id="ff_c"><label>Role</label><select id="ff_r">${roles.map(r => `<option>${r}</option>`).join('')}</select><label>Organisation or site</label><input type="text" id="ff_o" placeholder="e.g. Om Sai Bhatta">`,
+  onOk: () => { const n = $('#ff_n').value.trim(), c = $('#ff_c').value.trim(); if (!n || !c) { toast('Name and contact are required'); return false; } users.push({ name: n, role: $('#ff_r').value, org: $('#ff_o').value.trim() || '—', contact: c, last: 'invited', status: 'Active' }); logAudit('Users', 'User added', `${n} · ${$('#ff_r').value}`); renderers['adm-users'](); toast('Invite sent'); return true; } });
+
+const gateways = machines.map((m, i) => { const r = rng(300 + i); const days = Math.floor(r() * 400) - 10;
+  return { serial: 'GW-24' + String(100 + i * 7).padStart(4, '0'), m: m.id, fw: m.fw, sig: m.state === 'Offline' ? 0 : 1 + Math.floor(r() * 4), certDays: days, seen: m.seen, status: 'Active' }; });
+gateways.push({ serial: 'GW-240410', m: '— in stock —', fw: 'gw 1.4.2', sig: 0, certDays: 365, seen: null, status: 'Unassigned' });
+renderers['adm-devices'] = function () {
+  const online = gateways.filter(g => g.status === 'Active' && g.seen != null && g.seen < 60).length, exp = gateways.filter(g => g.status === 'Active' && g.certDays < 30).length;
+  $('#gwKpis').innerHTML = [['Gateways', gateways.length, 'including stock'], ['Online now', online, 'reported in the last hour'], ['Certificates expiring', exp, 'within 30 days'], ['In stock', gateways.filter(g => g.status === 'Unassigned').length, 'ready to fit'], ['Revoked', gateways.filter(g => g.status === 'Revoked').length, 'cannot connect']]
+    .map(([l, v, mm]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div><div class="meta">${mm}</div></div>`).join('');
+  $('#gwBody').innerHTML = gateways.map((g, i) => { const cert = g.status === 'Revoked' ? '<span class="sev critical"><span class="dot">!</span>Revoked</span>' : g.certDays < 0 ? '<span class="sev critical"><span class="dot">!</span>Expired</span>' : g.certDays < 30 ? `<span class="sev warning"><span class="dot">!</span>${g.certDays} days left</span>` : `<span class="muted">${g.certDays} days left</span>`;
+    return `<tr style="cursor:default"><td class="code">${g.serial}</td><td>${esc(g.m)}</td><td class="hide-sm">${esc(g.fw)}</td><td><span class="sig" aria-label="signal ${g.sig} of 4">${[1, 2, 3, 4].map(n => `<i class="${g.sig >= n ? 'on' : ''}" style="height:${n * 3 + 2}px"></i>`).join('')}</span>${g.sig === 0 ? '<span class="muted">none</span>' : ''}</td><td>${cert}</td><td>${g.seen == null ? (g.status === 'Pending' ? 'waiting for first connect' : '—') : fmtSeen(g.seen)}</td>
+      <td>${g.status === 'Active' ? `<span style="display:flex;gap:6px">${g.certDays < 30 ? `<button class="btn" data-renew="${i}">Renew</button>` : ''}<button class="btn danger" data-revoke="${i}">Revoke</button></span>` : ''}</td></tr>`; }).join('');
+  $('#gwBody').querySelectorAll('[data-renew]').forEach(b => b.onclick = () => { const g = gateways[+b.dataset.renew]; g.certDays = 365; logAudit('Gateways', 'Certificate renewed', `${g.serial} · ${g.m}`); toast('New certificate pushed to gateway'); renderers['adm-devices'](); });
+  $('#gwBody').querySelectorAll('[data-revoke]').forEach(b => b.onclick = () => { if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = 'Tap to confirm'; setTimeout(() => { if (b.isConnected) { delete b.dataset.confirm; b.textContent = 'Revoke'; } }, 3000); return; } const g = gateways[+b.dataset.revoke]; g.status = 'Revoked'; logAudit('Gateways', 'Certificate revoked', `${g.serial} · ${g.m}`); toast(`${g.serial} can no longer connect`); renderers['adm-devices'](); });
+};
+$('#gwAdd').onclick = () => openForm({ title: 'Provision gateway', sub: 'Registers the device, links it to a machine and issues its certificate', ok: 'Provision',
+  body: `<label>Gateway serial (on the box label)</label><input type="text" id="ff_s" placeholder="GW-24xxxx"><label>Machine</label><select id="ff_pm">${machines.map(m => `<option>${esc(m.id)}</option>`).join('')}</select><label>Rules and firmware channel</label><select id="ff_ch"><option>Stable (gw 1.4.2)</option><option>Ring 2 (gw 1.5.0-rc1)</option></select>`,
+  onOk: () => { const s = $('#ff_s').value.trim().toUpperCase(); if (!/^GW-\d{4,}$/.test(s)) { toast('Serial looks like GW-240123'); return false; } const code = Math.random().toString(36).slice(2, 6).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    gateways.unshift({ serial: s, m: $('#ff_pm').value, fw: $('#ff_ch').value.includes('1.5') ? 'gw 1.5.0-rc1' : 'gw 1.4.2', sig: 0, certDays: 365, seen: null, status: 'Pending' }); logAudit('Gateways', 'Gateway provisioned', `${s} → ${$('#ff_pm').value}`); renderers['adm-devices'](); toast(`Claim code ${code} — enter it in the installer app on site`); return true; } });
+
+const rules = [
+  { code: 'HYD-01', name: 'Hydraulic over-pressure', metric: 'Hydraulic pressure', unit: 'bar', op: '>', t: { 'BMM-160': 300, 'BMM-310': 320 }, sev: 'Critical', where: 'Gateway + cloud', on: true },
+  { code: 'HYD-02', name: 'Hydraulic oil hot', metric: 'Hydraulic oil temp', unit: '°C', op: '>', t: { 'BMM-160': 80, 'BMM-310': 80 }, sev: 'Warning', where: 'Gateway + cloud', on: true },
+  { code: 'MTR-01', name: 'Engine oil pressure low', metric: 'Engine oil pressure', unit: 'bar', op: '<', t: { 'BMM-160': 1.5, 'BMM-310': 1.5 }, sev: 'Critical', where: 'Gateway + cloud', on: true },
+  { code: 'ENG-02', name: 'Engine overheating', metric: 'Coolant temp', unit: '°C', op: '>', t: { 'BMM-160': 100, 'BMM-310': 102 }, sev: 'Critical', where: 'Gateway + cloud', on: true },
+  { code: 'MIX-01', name: 'Mixer overload', metric: 'Mixer load', unit: '%', op: '>', t: { 'BMM-160': 95, 'BMM-310': 95 }, sev: 'Critical', where: 'Gateway', on: true },
+  { code: 'MIX-02', name: 'Mixer load above baseline', metric: 'Mixer load vs 30-day baseline', unit: '%', op: '>', t: { 'BMM-160': 20, 'BMM-310': 20 }, sev: 'Warning', where: 'Cloud', on: true },
+  { code: 'DRM-02', name: 'Drum and ground speed out of sync', metric: 'Speed match', unit: '%', op: '<', t: { 'BMM-160': 92, 'BMM-310': 92 }, sev: 'Warning', where: 'Gateway', on: true },
+  { code: 'DRM-03', name: 'Cycle time drifting up', metric: 'Cycle time vs baseline', unit: '%', op: '>', t: { 'BMM-160': 10, 'BMM-310': 10 }, sev: 'Warning', where: 'Cloud', on: true },
+  { code: 'BRG-01', name: 'Bearing vibration high', metric: 'Bearing vibration', unit: 'mm/s', op: '>', t: { 'BMM-160': 7.1, 'BMM-310': 7.1 }, sev: 'Warning', where: 'Cloud', on: true },
+  { code: 'PRC-03', name: 'Release agent low', metric: 'Release agent level', unit: '%', op: '<', t: { 'BMM-160': 15, 'BMM-310': 15 }, sev: 'Info', where: 'Gateway', on: true },
+  { code: 'SRV-01', name: 'Engine oil change due', metric: 'Engine hours since change', unit: 'h', op: '>', t: { 'BMM-160': 250, 'BMM-310': 250 }, sev: 'Info', where: 'Cloud', on: true }
+];
+let ruleModel = 'BMM-160', ruleVersion = 13, ruleDraft = null;
+function cloneRules() { return rules.map(r => ({ ...r, t: { ...r.t } })); }
+renderers['adm-rules'] = function () {
+  if (!ruleDraft) ruleDraft = cloneRules();
+  chipRow($('#ruleModelChips'), ['BMM-160', 'BMM-310'], ruleModel, v => { ruleModel = v; renderers['adm-rules'](); });
+  $('#ruleHint').textContent = `Published version v${ruleVersion} · thresholds for ${ruleModel}`;
+  $('#ruleBody').innerHTML = ruleDraft.map((r, i) => { const o = rules[i], tc = r.t[ruleModel] !== o.t[ruleModel], sc = r.sev !== o.sev;
+    return `<tr style="cursor:default"><td class="code">${r.code}</td><td>${esc(r.name)}</td><td class="muted">${esc(r.metric)}</td>
+      <td style="white-space:nowrap">${r.op} <input class="thr ${tc ? 'changed' : ''}" type="number" step="any" data-t="${i}" value="${r.t[ruleModel]}" aria-label="Threshold for ${r.code}"> ${esc(r.unit)}</td>
+      <td><select class="input ${sc ? 'thr changed' : ''}" data-s="${i}" style="width:auto;padding:4px 6px" aria-label="Severity for ${r.code}">${['Critical', 'Warning', 'Info'].map(s => `<option ${s === r.sev ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
+      <td class="hide-sm muted">${esc(r.where)}</td><td><label class="switch"><input type="checkbox" data-on="${i}" ${r.on ? 'checked' : ''} aria-label="Rule ${r.code} on"><span></span></label></td></tr>`; }).join('');
+  const dirty = diffRules();
+  $('#ruleSave').disabled = $('#ruleReset').disabled = !dirty.length;
+  $('#ruleDirty').textContent = dirty.length ? `${dirty.length} unsaved change${dirty.length > 1 ? 's' : ''}` : '';
+  $('#ruleBody').querySelectorAll('[data-t]').forEach(inp => inp.onchange = () => { ruleDraft[+inp.dataset.t].t[ruleModel] = +inp.value; renderers['adm-rules'](); });
+  $('#ruleBody').querySelectorAll('[data-s]').forEach(s => s.onchange = () => { ruleDraft[+s.dataset.s].sev = s.value; renderers['adm-rules'](); });
+  $('#ruleBody').querySelectorAll('[data-on]').forEach(c => c.onchange = () => { ruleDraft[+c.dataset.on].on = c.checked; renderers['adm-rules'](); });
+  $('#routeBody').innerHTML = [['Critical', 'Buzzer + app + WhatsApp', 'WhatsApp + SMS', 'Console + push', 'After 10 min → L3 engineer and phone call'], ['Warning', 'App message', 'WhatsApp', 'Console', 'After 2 h → support lead'], ['Info', 'App message', 'Daily summary', 'Console', '—']]
+    .map(([s, ...c]) => `<tr style="cursor:default"><td>${sevBadge(s.toLowerCase())}</td>${c.map(x => `<td>${esc(x)}</td>`).join('')}</tr>`).join('');
+};
+function diffRules() { const d = []; ruleDraft.forEach((r, i) => { const o = rules[i]; ['BMM-160', 'BMM-310'].forEach(mdl => { if (r.t[mdl] !== o.t[mdl]) d.push(`${r.code} ${mdl}: ${o.t[mdl]} → ${r.t[mdl]} ${r.unit}`); }); if (r.sev !== o.sev) d.push(`${r.code} severity: ${o.sev} → ${r.sev}`); if (r.on !== o.on) d.push(`${r.code} ${r.on ? 'turned on' : 'turned off'}`); }); return d; }
+$('#ruleSave').onclick = () => { const d = diffRules(); if (!d.length) return; ruleVersion++; rules.splice(0, rules.length, ...cloneRulesFrom(ruleDraft)); logAudit('Rules', `Rules v${ruleVersion} published`, d.join('; ')); ruleDraft = null; toast(`Rules v${ruleVersion} published — gateways update on next sync`); renderers['adm-rules'](); };
+function cloneRulesFrom(arr) { return arr.map(r => ({ ...r, t: { ...r.t } })); }
+$('#ruleReset').onclick = () => { ruleDraft = null; renderers['adm-rules'](); };
+
+let auditFilter = 'All';
+renderers['adm-audit'] = function () {
+  const cmd = cmdLog.map(c => ({ t: 'Today ' + c.t, who: c.by, role: c.by === 'System' ? 'System' : 'Support engineer', type: 'Commands', a: c.c, d: `${c.m} · ${c.res}${c.r ? ' · ' + c.r : ''}` }));
+  const all = audit.concat(cmd);
+  chipRow($('#auditChips'), ['All', 'Users', 'Rules', 'Commands', 'Gateways', 'Firmware', 'Reports'], auditFilter, v => { auditFilter = v; renderers['adm-audit'](); });
+  $('#auditBody').innerHTML = all.filter(e => auditFilter === 'All' || e.type === auditFilter).map(e => `<tr style="cursor:default"><td class="muted" style="white-space:nowrap">${esc(e.t)}</td><td>${esc(e.who)}</td><td class="muted">${esc(e.role)}</td><td><span class="pill">${esc(e.type)}</span> ${esc(e.a)}</td><td class="hide-sm muted">${esc(e.d)}</td></tr>`).join('');
+};
+
+// ---------- generic form modal ----------
+let formCfg = null;
+function openForm(cfg) { formCfg = cfg; $('#formTitle').textContent = cfg.title; $('#formSub').textContent = cfg.sub || ''; $('#formBody').innerHTML = cfg.body; $('#formOk').textContent = cfg.ok || 'Save'; $('#formModalBg').classList.add('open'); const f = $('#formBody').querySelector('input,textarea,select'); if (f) f.focus(); }
+$('#formCancel').onclick = () => $('#formModalBg').classList.remove('open');
+$('#formModalBg').addEventListener('click', e => { if (e.target.id === 'formModalBg') $('#formModalBg').classList.remove('open'); });
+$('#formOk').onclick = () => { if (formCfg && formCfg.onOk() !== false) $('#formModalBg').classList.remove('open'); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#formModalBg').classList.remove('open'); });
+
+// ---------- role wiring ----------
+function updateRoleCounts() {
+  $('#opAlertCount').textContent = opFaults().length; $('#opAlertCount').classList.toggle('zero', !opFaults().length);
+  const of = ownFaults().filter(f => f.status !== 'Scheduled' && f.sev === 'critical').length; $('#ownAlertCount').textContent = of; $('#ownAlertCount').classList.toggle('zero', !of);
+}
+Object.assign(titles, { 'op-home': 'My machine', 'op-checks': 'Daily checks', 'op-shift': 'Shift log', 'own-home': 'Overview', 'own-production': 'Production and cost', 'own-service': 'Service and warranty', 'adm-users': 'Users and roles', 'adm-devices': 'Gateways', 'adm-rules': 'Rules and thresholds', 'adm-audit': 'Audit log' });
+const profiles = {
+  support: ['RK', 'Rahul K. · Support engineer', 'Support console · v0.1<br>Tenant: Demo OEM', 'faults'],
+  field: ['AJ', 'Ajay · Field engineer', 'Field app · v0.1<br>Works offline on site', 'my-jobs'],
+  operator: ['MS', 'Mahesh · Operator', 'Operator app · BMM-310 #0019<br>Om Sai Bhatta, Karnal', 'op-home'],
+  owner: ['SG', 'S. Gupta · Owner', 'Owner app<br>Gupta Brick Industries', 'own-home'],
+  admin: ['AD', 'Admin', 'Platform admin<br>Tenant: Demo OEM', 'adm-users']
+};
+function roleOf(view) { return view.startsWith('op-') ? 'operator' : view.startsWith('own-') ? 'owner' : view.startsWith('adm-') ? 'admin' : fieldViews.includes(view) ? 'field' : 'support'; }
+applyRole = function (role) {
+  currentRole = role;
+  document.querySelectorAll('.nav-group[data-role]').forEach(g => g.hidden = g.dataset.role !== role);
+  $('#roleSel').value = role;
+  const [av, name, foot] = profiles[role];
+  $('#avatar').textContent = av; $('#userName').textContent = name;
+  document.querySelector('.sidebar-foot').innerHTML = foot;
+  document.querySelector('.search').style.display = role === 'operator' ? 'none' : '';
+};
+$('#roleSel').onchange = e => { location.hash = profiles[e.target.value][3]; };
+updateRoleCounts();
 
 updateCounts(); show(location.hash.slice(1));
